@@ -1,3 +1,15 @@
+Test<-readRDS("output/popsims/popsim_decline0_envtlV0.01_envtlCorr0.rds")
+
+mean(unlist(lapply(Test, FUN = function(x) {mean(x$V21 / x$V1)})))*100
+
+
+
+
+
+
+
+
+
 Test<-fitStrataModel(data[[1]][[1]], pops_unn)
 
 Test <- fitModels(data[[1]][1:3], pops)

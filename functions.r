@@ -23,14 +23,15 @@ projPops <- function(pops, names, nYears, decline, genYears, demogV, envtlV, env
   sim <- function(pops, names, nYears, r, demogV, envtlVC) {
   # function to run one iteration of the simulation
     Output <- round(matrix(pops))
+    Rs <- matrix(NA, nrow = length(pops), ncol = nYears)
 
     for (t in 1:nYears) {
       # draw random deviates and growth rate for this year
       # note here we adjust for the expectation of a log normal distribution: exp((sigma^2)/2)
-      DemR <- rnorm(n = length(pops), mean = -(demogV / (Output[, ncol(Output)] ^ 2)) / 2, sd = sqrt(demogV) / Output[, ncol(Output)])
-      EnvR <- mvrnorm(n = 1, mu = -diag(envtlVC) / 2, Sigma = envtlVC)
+      DemR <- rnorm(n = length(pops), mean = 0, sd = ifelse(Output[, ncol(Output)] > 0, sqrt(demogV) / Output[, ncol(Output)], 0))
+      EnvR <- mvrnorm(n = 1, mu = rep(0, length(pops)), Sigma = envtlVC)
       R <- rep(r, length(pops)) + DemR + EnvR
-
+      Rs[, t] <- R
       Output <- cbind(Output, round(Output[, ncol(Output)] * exp(R)))
     }
 
@@ -43,8 +44,8 @@ projPops <- function(pops, names, nYears, decline, genYears, demogV, envtlV, env
   envtlVC[lower.tri(envtlVC)] <- envtlV * envtlCorr
   envtlVC[upper.tri(envtlVC)] <- envtlV * envtlCorr
 
-  # get r
-  r <- ((1 - (decline / 100)) ^ (1 / genYears)) - 1
+  # get deterministic r for the given decline
+  r <- log((1 - (decline / 100)) ^ (1 / genYears))
 
   # replicate simulations nSims times and return list
   return(replicate(n = nSims, expr = sim(pops = pops, names = names, nYears = nYears, r = r, demogV = demogV, envtlVC = envtlVC), simplify = FALSE))
@@ -406,7 +407,6 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
   sim <- function(popSim, survey, f0, f0se, stripMissLow, stripMissMean, stripMissHigh) {
     # join simulations to survey for this iteration
     join <- left_join(x = survey, y = popSim, by = "POP")
-
     # output for densities
     out <- list()
     # output for counts
@@ -416,7 +416,7 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
     # output for model data
     out4 <- list()
 
-    # loop through populations
+    # loop through strata
     for (i in 1:nrow(join)) {
       if (is.null(join$SURVEY[[i]])) {
         out[[i]] <- NA
@@ -424,15 +424,11 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
         out3[[i]] <- NA
         out4[[i]] <- NA
       } else {
-        # get densities
+        # get change in density
         out[[i]] <- join$SURVEY[[i]]
         out[[i]][which(!is.na(out[[i]]))] <- as.numeric(join[i, paste("V", join$SURVEY[[i]][which(!is.na(out[[i]]))], sep="")]) / as.numeric(join[i,"V1"])
-        out[[i]] <- out[[i]] * matrix(rep(as.numeric(join[i, "KD_MEAN"]), ncol(join$SURVEY[[i]])), nrow = nrow(join$SURVEY[[i]]), ncol = ncol(join$SURVEY[[i]])) # note here we assume densities in each site
-                                                                                                                                                                 # within a stratum are the same - variation
-                                                                                                                                                                 # among sites can be introduced via the standard
-                                                                                                                                                                 # deviation (see below) but sometimes results in
-                                                                                                                                                                 # unrealistically high densities
-        # out[[i]] <- out[[i]] * matrix(rep(exp(rnorm(n = nrow(join$SURVEY[[i]]), mean = as.numeric(join[i, "KDLN_MEAN"]), sd = as.numeric(join[i, "KDLN_SD"]))), ncol(join$SURVEY[[i]])), nrow = nrow(join$SURVEY[[i]]), ncol = ncol(join$SURVEY[[i]]))
+        out[[i]] <- out[[i]] * matrix(rep(exp(rnorm(n = nrow(join$SURVEY[[i]]), mean = as.numeric(join[i, "KDLN_MEAN"]), sd = as.numeric(join[i, "KDLN_SD"]))), ncol(join$SURVEY[[i]])), nrow = nrow(join$SURVEY[[i]]), ncol = ncol(join$SURVEY[[i]]))
+
         # get counts and perpendicular distances
         if (join[i, "TYPE"] == "line") {
           f0Rand <- f0  # exp(rnorm(n = 1, mean = f0log, sd = f0selog)) note here we assume f0 is the same among strata and known with certainty, but uncertainty can be introduced via the standard error
@@ -441,16 +437,24 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
           T <- ncol(out[[i]])
           J <- 4
           db <- qhnorm(p = c(0, 0.25, 0.5, 0.75, 0.99), sigma = sigma)
-          cp <- numeric(J)
-          cp[1] <- phnorm(db[2], sigma = sigma)
+          # Half-normal, line transect
+          g <- function(x, sig) exp(-x^2/(2*sig^2))
+          f <- function(x, sig) exp(-x^2/(2*sig^2)) / sqrt(pi*sigma^2/2)
+          cp <- u <- a <- numeric(J)
+          L <-  1
+          a[1] <- L * db[2]
+          cp[1] <- integrate(g, db[1], db[2], sig = sigma)$value
           for(j in 2:J) {
-            cp[j] <- phnorm(db[j + 1], sigma = sigma) - phnorm(db[j], sigma = sigma)
+            a[j] <-  db[j+1]  - sum(a[1:j])
+            cp[j] <- integrate(g, db[j], db[j + 1], sig = sigma)$value
           }
+          u <- a / sum(a)
+          cp <- (cp / a) * u
           cp[j + 1] <- 1 - sum(cp)
           primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
-          # get counts
-          out2[[i]] <- matrix(suppressWarnings(rpois(n = M * T, lambda = (2 * as.numeric(join[i, "SIZE"]) * out[[i]]) / (10000 * f0Rand))), nrow = M, ncol = T)
-          # get perpendicular distances
+          # get true N
+          out2[[i]] <- round(out[[i]] * 2 * as.numeric(join[i, "SIZE"]) * db[J + 1] / 10000)
+          # get observed counts in perpendicular distance bands
           out3[[i]] <- array(NA, c(M, J, T))
           for (k in 1:M) {
             if (!is.na(out2[[i]][k, 1])) {
@@ -467,13 +471,13 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
           out4[[i]] <- unmarkedFrameDSO(y = out3[[i]], numPrimary = T, primaryPeriod = primPer, dist.breaks = db,
                                   survey = "line", unitsIn = "m", tlength = rep(as.numeric(join[i, "SIZE"]), M))
         } else if ((join[i, "TYPE"]) == "area") {
-          missRand <- stripMissMean # runif(1, stripMissLow, stripMissHigh)  note here we assume detection error is is the same among strata and known with certainty,
+          missRand <- stripMissMean # runif(1, stripMissLow, stripMissHigh)  note here we assume detection error is the same among strata and known with certainty,
                                       # but uncertainty can be introduced via the range of values
           M <- nrow(out[[i]])
           T <- ncol(out[[i]])
           J <- 1
           primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
-          # get counts
+          # get observed counts
           out2[[i]] <- matrix(suppressWarnings(rbinom(n = M * T, size = round(as.numeric(join[i, "SIZE"]) * out[[i]]), prob = 1 - missRand)), nrow = M, ncol = T)
           # get perpendicular distances (not needed in this case)
           out3[[i]] <- NA
@@ -494,55 +498,82 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
   return(data)
 }
 
-fitModels <- function(survData, pops) {
+fitModels <- function(survData, pops, expR) {
 # survData is a list of survey data for all replicates for a given population scenario and given monitoring strategy
 
-  pops_unn <- unnest(pops, cols = c(data)) %>% ungroup() %>% dplyr::select(POP, ID, AREA)
-
   #functions
-  fitOneModel <- function (data) {
+  fitOneModel <- function (data, expR) {
   # function to fit one model in one stratum
-
-    if (!(class(data) == "unmarkedFrameDSO" & class(data) == "unmarkedFrameDSO")) {
-      mod <- NA
-      type <- NA
-    } else {
-      if (class(data) == "unmarkedFrameDSO") {
-        mod <- distsampOpen(lambdaformula = ~1, gammaformula = ~1, omegaformula = ~1, pformula = ~1, data = data, K = max(getY(data), na.rm = T) * 2 + 5, keyfun = "halfnorm",
-                output = "density", unitsOut = "ha", dynamics = "trend", method = "Nelder-Mead")
-        type <- slot(mod, "fitType") #distsampOpen
-      } else if (class(data) == "unmarkedFramePCO") {
-        mod <- pcountOpen(lambdaformula = ~1, gammaformula = ~1, omegaformula = ~1, pformula = ~1, data = data, mixture = "P", K = max(getY(data), na.rm = T) * 2 + 5,
-                dynamics = "trend", method = "Nelder-Mead")
-        type <- slot(mod, "fitType") #"pcountOpen"
+    out <- tryCatch(
+    {
+      if (!(class(data) == "unmarkedFrameDSO" | class(data) == "unmarkedFramePCO")) {
+        out_nerr <- NA
+        type <- NA
       } else {
-        stop("incorrect survey type")
+        if (class(data) == "unmarkedFrameDSO") {
+          out_nerr <- distsampOpen(lambdaformula = ~1, gammaformula = ~1, omegaformula = ~1, pformula = ~1, data = data, K = max(getY(data), na.rm = T) * 2 + 5, keyfun = "halfnorm",
+          output = "density", unitsOut = "ha", dynamics = "trend", method = "BFGS", starts = c(log(0.15), expR, log(sqrt(2) / (0.0285 * sqrt(pi)))))
+          type <- slot(out_nerr, "fitType") #distsampOpen
+        } else if (class(data) == "unmarkedFramePCO") {
+          out_nerr <- pcountOpen(lambdaformula = ~1, gammaformula = ~1, omegaformula = ~1, pformula = ~1, data = data, mixture = "P", K = max(getY(data), na.rm = T) * 2 + 5,
+                  dynamics = "trend", method = "BFGS", starts = c(log(0.15 * 30), expR, log(0.84 / (1-0.84))))
+          type <- slot(out_nerr, "fitType") #"pcountOpen"
+        } else {
+          stop("incorrect survey type")
+        }
       }
-    }
-
-    # create output
-    if (!(class(data) == "unmarkedFrameDSO" & class(data) == "unmarkedFrameDSO")) {
-      out <- matrix(NA, nrow = 2, ncol = 3)
-      dimnames(out)[[1]] <- c("mu", "sigma")
-    } else {
-      out <- rbind(coef(mod), SE(mod))
-      dimnames(out)[[1]] <- c("mu", "sigma")
-    }
-    return(list(type, out))
+      # create output
+      if (class(out_nerr) == "logical") {
+        out_nerr <- matrix(NA, nrow = 2, ncol = 3)
+        dimnames(out_nerr)[[1]] <- c("mu", "sigma")
+      } else {
+        out_nerr <- rbind(coef(out_nerr), SE(out_nerr))
+        dimnames(out_nerr)[[1]] <- c("mu", "sigma")
+      }
+      #write("OK\n", "errorlogfile.txt", append = TRUE)
+      list(type, out_nerr)
+    },
+    error = function(cond) {
+      out_err <- matrix(NA, nrow = 2, ncol = 3)
+      dimnames(out_err)[[1]] <- c("mu", "sigma")
+      type <- NA
+      # Add error message to the error log file
+      #write(toString(cond), "errorlogfile.txt", append = TRUE)
+      return(list(type, out_err))
+    },
+    warning = function(cond) {
+      out_err <- matrix(NA, nrow = 2, ncol = 3)
+      dimnames(out_err)[[1]] <- c("mu", "sigma")
+      type <- NA
+      # Add error message to the error log file
+      #write(toString(cond), "errorlogfile.txt", append = TRUE)
+      return(list(type, out_err))
+    })
+    return(out)
   }
 
   aggFits <- function(fits) {
   # function to get weighted average trends estimates, standard errors and whether trend detected at p = 0.05 level
     extractTrend <- function(fit) {
       if (!is.na(fit[[1]])) {
-        return(fit[[2]][1, 2])
+        if (is.finite(fit[[2]][1, 2])) {
+          return(fit[[2]][1, 2])
+        } else {
+          return(NA)
+          #write("Trend estimate not finite, setting to NA\n", "errorlogfile.txt", append = TRUE)
+        }
       } else {
         return(NA)
       }
     }
     extractSE <- function(fit) {
       if (!is.na(fit[[1]])) {
-        return(fit[[2]][2, 2])
+        if (is.finite(fit[[2]][2, 2])) {
+          return(fit[[2]][2, 2])
+        } else {
+          return(NA)
+          #write("Standard error of trend estimate not finite, setting to NA\n", "errorlogfile.txt", append = TRUE)
+        }
       } else {
         return(NA)
       }
@@ -550,9 +581,21 @@ fitModels <- function(survData, pops) {
     extractDens <- function(fit, size) {
       if (!is.na(fit[[1]])) {
         if (fit[[1]] == "distsampOpen") {
-          return(exp(fit[[2]][1, 1] + (0.5 * fit[[2]][2, 1] ^ 2)))
+          out <- exp(fit[[2]][1, 1] + (0.5 * fit[[2]][2, 1] ^ 2))
+          if (is.finite(out)) {
+            return(out)
+          } else {
+            return(NA)
+            #write("Density estimate not finite, setting to NA\n", "errorlogfile.txt", append = TRUE)
+          }
         } else if (fit[[1]] == "pcountOpen") {
-          return(exp(fit[[2]][1, 1] + (0.5 * fit[[2]][2, 1] ^ 2)) / size)
+          out <- exp(fit[[2]][1, 1] + (0.5 * fit[[2]][2, 1] ^ 2)) / size
+          if (is.finite(out)) {
+            return(out)
+          } else {
+            return(NA)
+            #write("Density estimate not finite, setting to NA\n", "errorlogfile.txt", append = TRUE)
+          }
         } else {
           stop("wrong model type")
         }
@@ -564,62 +607,79 @@ fitModels <- function(survData, pops) {
     result <- fits %>% mutate(TREND = map_dbl(.x = FITS, .f = extractTrend), SE = map_dbl(.x = FITS, .f = extractSE), DENS = map2_dbl(.x = FITS, .y = SIZE, .f = extractDens)) %>%
                         mutate(DAREA = DENS * AREA)
 
-    weights <- result$DAREA / sum(result$DAREA, na.rm = TRUE)
-
-    out <- list()
-    outtrend <-  sum(result$TREND * weights, na.rm = TRUE) / sum(weights, na.rm = TRUE)
-    outse <- sqrt(sum(result$SE ^ 2 * weights ^ 2, na.rm = TRUE) / (sum(weights, na.rm = TRUE) ^ 2))
-    outp <- pnorm(outtrend, mean = 0, sd = outse)
-    out$trend <- exp(outtrend + (0.5 * outse ^ 2))
-    #out$se <- outse
-    #out$p <- outp
-    out$detect <- if (outp < 0.05) {1} else {0}
+    if (all(is.na(result$TREND))) {
+      out <- list()
+      out$r_est <- NA
+      out$r_decline <- 0
+    } else {
+      weights <- result$DAREA / sum(result$DAREA, na.rm = TRUE)
+      out <- list()
+      outtrend <-  sum(result$TREND * weights, na.rm = TRUE) # / sum(weights, na.rm = TRUE)
+      if (any(is.infinite(out$trend))) {
+        out$trend[which(is.infinite(out$trend))] <- NA
+        #write("Trend not finite, setting to NA\n", "errorlogfile.txt", append = TRUE)
+      }
+      outse <- sqrt(sum(result$SE ^ 2 * weights ^ 2, na.rm = TRUE)) # / (sum(weights, na.rm = TRUE) ^ 2))
+      outp <- pnorm(outtrend, mean = 0, sd = outse)
+      out$r_est <- outtrend
+      #out$r_se <- outse
+      #out$p <- outp
+      out$r_decline <- if (outp < 0.05) {1} else {0}
+    }
 
     return(out)
   }
 
-  fitStrataModel <- function (stratData, pops_unn) {
-  # function to fit a model to each stratum
+  fitStrataModel <- function (stratData, pops_unn, expR) {
+  # function to fit a model to each population
 
     # fit models and return list
-    fits <- lapply(stratData$MODDAT, FUN = fitOneModel)
+    fits <- lapply(stratData$MODDAT, FUN = fitOneModel, expR = expR)
 
-    # add to data frame
+    # fit models and add to data frame
     stratData <- stratData %>% dplyr::select(ID, SIZE) %>% add_column(FITS = fits)
 
     unnestData <- left_join(x = pops_unn, y = stratData, by = "ID")
     nestData <- unnestData %>% group_by(POP) %>% nest()
+    numPops <- pops_unn %>% group_by(POP) %>% nest() %>% nrow()
 
     # get whether a decline is detected for the region
-    out1 <- lapply(list(unnestData), FUN = aggFits)
     out1 <- unlist(lapply(list(unnestData), FUN = aggFits))
     out1a <- out1[1] # trend
-    out1b <- out1[2] # detect
+    out1b <- out1[2] # decline detected
 
     # get the number of declines detected for each population
-    out2 <- lapply(nestData$data, FUN = aggFits)
-    out2 <- unlist(out2)
-    out2 <- out2[seq(2, length(out2), 2)] # select only the detections (not trends)
-    out2 <- sum(out2)
-    output <- c(out1a, out1b, out2)
-    names(output) <- c("trend", "region", "allpops")
+    out2 <- unlist(lapply(nestData$data, FUN = aggFits)) # which populations detected decline
+    out2b <- out2[seq(2, length(out2), 2)] # select only the detections (not trends)
+    out2a <- sum(out2b, na.rm = TRUE) # number of populations with declines
+
+    output <- c(out1a, out1b, out2a, out2b)
+    names(output) <- c("r_est", "region_decline", "pops_decline", sprintf("pop%s", seq(1:numPops)))
 
     return(output)
   }
 
-  # fit models across all replicates
-  listTest <- lapply(survData, FUN = fitStrataModel, pops_unn = pops_unn)
+  # unnest populations data
+  pops_unn <- unnest(pops, cols = c(data)) %>% ungroup() %>% dplyr::select(POP, ID, AREA)
 
+  # fit models across all replicates
+  out <- lapply(survData, FUN = fitStrataModel, pops_unn = pops_unn, expR = expR)
+
+  numPops <- pops_unn %>% group_by(POP) %>% nest() %>% nrow()
 
   # prepare output
-  out <- matrix(unlist(listTest), nrow = 3, ncol = length(survData))
-  dimnames(out) <- list(c("trend", "region", "pops"), NULL)
-  trendSD <- sd(out["trend",])
-  trendLow <- quantile(out["trend", ], 0.025)
-  trendHigh <- quantile(out["trend", ], 0.975)
-  out <- apply(out, MARGIN = 1, FUN = mean)
-  out <- c(out, trendSD, trendLow, trendHigh)
-  names(out) <- c("trend", "region", "pops", "trendsd", "trendlow", "trendhigh")
+  out <- matrix(unlist(out), nrow = 3 + numPops, ncol = length(survData))
+  dimnames(out) <- list(c("r_est", "region_decline", "pops_decline", sprintf("pop%s", seq(1:numPops))), NULL)
+  trendMean <- mean(out["r_est",], na.rm = TRUE)
+  trendSE <- sd(out["r_est",], na.rm = TRUE) / (length(out["r_est", which(!is.na(out["r_est", ]))]) - 1)
+  trendBias <- trendMean - expR
+  regionDet <- mean(out["region_decline", ], na.rm = TRUE)
+  regionDetLow <- binom.confint(sum(out["region_decline", ], na.rm = TRUE), length(out["region_decline", which(!is.na(out["region_decline", ]))]), method = "exact")$lower
+  regionDetHigh <- binom.confint(sum(out["region_decline", ], na.rm = TRUE), length(out["region_decline", which(!is.na(out["region_decline", ]))]), method = "exact")$upper
+  popsNumDet <- mean(out["pops_decline",], na.rm = TRUE)
+  popsDet <- apply(out[sprintf("pop%s", seq(1:numPops)), ], MARGIN = 1, FUN = mean, na.rm =TRUE)
+  output <- c(trendMean, trendSE, expR, trendBias, regionDet, regionDetLow, regionDetHigh, popsNumDet, popsDet)
+  names(output) <- c("r_est", "r_se", "r_exp", "r_bias", "region_decline_mean", "region_decline_low", "region_decline_high", "num_pop_decline", sprintf("pop%s_decline", seq(1:numPops)))
 
-  return(out)
+  return(output)
 }

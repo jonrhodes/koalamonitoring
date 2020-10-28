@@ -4,6 +4,7 @@ library(unmarked)
 library(MASS)
 library(parallel)
 library(extraDistr)
+library(binom)
 
 # location of functions
 source("functions.r")
@@ -45,6 +46,9 @@ pops <- read.csv("input/start_dens_modified.csv") %>%
 pops <- pops %>% mutate(N = map_dbl(data, ~sum(.$ABUND)))
 
 # simulate population dynamics - comment out if already run
+
+procTime <- system.time({
+
 popSimComb <- expand.grid(decline = decline, envtlV = envtlV, envtlCorr = envtlCorr)
 # remove rows when environmental variation is 0 and correlation is 0 or 0.5
 popSimComb <- popSimComb %>% filter(!(envtlV == 0 & ((envtlCorr == 0) | (envtlCorr == 0.5))))
@@ -57,8 +61,15 @@ parApply(cl = cl, X = popSimComb, MARGIN = 1, FUN = function(x) {saveRDS(object 
                 x["decline"], "_envtlV", x["envtlV"], "_envtlCorr", x["envtlCorr"], ".rds", sep = ""))})
 stopCluster(cl)
 
+})
+
+print(procTime)
+
 # generate survey designs - comment out if already run
 # get combinations of parameters
+
+procTime <- system.time({
+
 survSimComb <- expand.grid(budget = budget, survIntens = survIntens, method = method, monInter = monInter, strat = strat, monitRep = monitRep)
 # collate fixed survey parameters together
 fixedSurvParams <- c(f0, f0se, tranDayLine, tranDayArea, siteSize)
@@ -70,13 +81,20 @@ parApply(cl = cl, X = survSimComb, MARGIN = 1, FUN = function(x) {saveRDS(object
                 x["budget"], "_survIntens", as.numeric(x["survIntens"]), "_method", x["method"], "_monInter", as.numeric(x["monInter"]), "_strat", x["strat"], "_monitRep", as.numeric(x["monitRep"]), ".rds", sep = ""))})
 stopCluster(cl)
 
+})
+
+print(procTime)
+
 # generate simulated survey data
 # get survey information
 Surveys <- apply(survSimComb, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/surveys/survey", "_budget", x["budget"], "_survIntens",
               as.numeric(x["survIntens"]), "_method", x["method"], "_monInter", as.numeric(x["monInter"]), "_strat", x["strat"], "_monitRep",
               as.numeric(x["monitRep"]), ".rds", sep = ""))})
 # loop through population combinations
-for (i in 1:nrow(popSimComb)) {
+for (i in 26:nrow(popSimComb)) {
+
+  procTime <- system.time({
+
   # get population simulations
   popSim <- readRDS(file = paste("output/popsims/popsim", "_decline", popSimComb[i, "decline"], "_envtlV",
         popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
@@ -92,26 +110,40 @@ for (i in 1:nrow(popSimComb)) {
   rm(popSim)
   rm(dataTemp)
   gc()
+
+  })
+
+  print(procTime)
+
 }
 
 # fit models
 # loop through population combinations
 for (i in 1:nrow(popSimComb)) {
+
+  procTime <- system.time({
+
   # get simulated data
   surveyData <- readRDS(file = paste("output/data/simdata", "_decline", popSimComb[i, "decline"], "_envtlV",
         popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
-
-  #Test <- lapply(surveyData[1:2], FUN = fitModels, pops = pops)
-
-  cl <- makeCluster(2)
-  clusterExport(cl, list("fitModels", "pops"))
+  # pick how many replicates - edit out if using all replicates
+  surveyData <- lapply(surveyData, FUN = function(x) {x[1:100]})
+  expR <-  log((1 - (popSimComb[i, "decline"] / 100)) ^ (1 / genYears))
+  cl <- makeCluster(detectCores() - 1)
+  clusterExport(cl, list("fitModels", "pops", "expR"))
   clusterEvalQ(cl, library(tidyverse))
   clusterEvalQ(cl, library(unmarked))
-  resultTemp <- parLapply(cl = cl, X = surveyData[1:2], fun = function(x) {return(fitModels(x, pops))})
+  clusterEvalQ(cl, library(binom))
+  resultTemp <- parLapply(cl = cl, X = surveyData, fun = function(x) {return(fitModels(x, pops, expR))})
   stopCluster(cl)
   saveRDS(object = resultTemp, file = paste("output/results/result", "_decline", popSimComb[i, "decline"], "_envtlV",
-        popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
+                popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
   rm(surveyData)
   rm(resultTemp)
   gc()
+
+  })
+
+  print(procTime)
+
 }
