@@ -427,8 +427,6 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
         # get change in density
         out[[i]] <- join$SURVEY[[i]]
         out[[i]][which(!is.na(out[[i]]))] <- as.numeric(join[i, paste("V", join$SURVEY[[i]][which(!is.na(out[[i]]))], sep="")]) / as.numeric(join[i,"V1"])
-        out[[i]] <- out[[i]] * matrix(rep(exp(rnorm(n = nrow(join$SURVEY[[i]]), mean = as.numeric(join[i, "KDLN_MEAN"]), sd = as.numeric(join[i, "KDLN_SD"]))), ncol(join$SURVEY[[i]])), nrow = nrow(join$SURVEY[[i]]), ncol = ncol(join$SURVEY[[i]]))
-
         # get counts and perpendicular distances
         if (join[i, "TYPE"] == "line") {
           f0Rand <- f0  # exp(rnorm(n = 1, mean = f0log, sd = f0selog)) note here we assume f0 is the same among strata and known with certainty, but uncertainty can be introduced via the standard error
@@ -452,8 +450,8 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
           cp <- (cp / a) * u
           cp[j + 1] <- 1 - sum(cp)
           primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
-          # get true N
-          out2[[i]] <- round(out[[i]] * 2 * as.numeric(join[i, "SIZE"]) * db[J + 1] / 10000)
+          # get true N assuming variation initial N among sites is Poisson distributed
+          out2[[i]] <-  round(out[[i]] * matrix(rep(rpois(n = M, lambda = as.numeric(join[i, "KD_MEAN"]) * 2 * as.numeric(join[i, "SIZE"]) * db[J + 1] / 10000), T), nrow = M, ncol = T))
           # get observed counts in perpendicular distance bands
           out3[[i]] <- array(NA, c(M, J, T))
           for (k in 1:M) {
@@ -477,8 +475,9 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
           T <- ncol(out[[i]])
           J <- 1
           primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
-          # get observed counts
-          out2[[i]] <- matrix(suppressWarnings(rbinom(n = M * T, size = round(as.numeric(join[i, "SIZE"]) * out[[i]]), prob = 1 - missRand)), nrow = M, ncol = T)
+          # get observed counts assuming variation in initial N among sites is Poisson distributed
+          out2[[i]] <- matrix(rbinom(n = M * T, size = round(out[[i]] * matrix(rep(rpois(n = M, lambda = as.numeric(join[i, "SIZE"]) * as.numeric(join[i, "KD_MEAN"])), T), nrow = M, ncol = T)),
+                          prob = 1 - missRand), nrow = M, ncol = T)
           # get perpendicular distances (not needed in this case)
           out3[[i]] <- NA
           # get model data

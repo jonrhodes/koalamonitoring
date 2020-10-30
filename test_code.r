@@ -1,3 +1,8 @@
+matrix(rbinom(9,size=matrix(c(5,6,7,20,22,5,1,5,9),nrow=3,ncol=3),p=0.5),3,3)
+
+
+
+
 Test<-readRDS("output/popsims/popsim_decline0_envtlV0.01_envtlCorr0.rds")
 
 mean(unlist(lapply(Test, FUN = function(x) {mean(x$V21 / x$V1)})))*100

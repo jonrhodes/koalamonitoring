@@ -91,7 +91,7 @@ Surveys <- apply(survSimComb, MARGIN = 1, FUN = function(x) {readRDS(file = past
               as.numeric(x["survIntens"]), "_method", x["method"], "_monInter", as.numeric(x["monInter"]), "_strat", x["strat"], "_monitRep",
               as.numeric(x["monitRep"]), ".rds", sep = ""))})
 # loop through population combinations
-for (i in 26:nrow(popSimComb)) {
+for (i in 1:nrow(popSimComb)) {
 
   procTime <- system.time({
 
