@@ -24,12 +24,12 @@ stripMissLow <- 0 # low end of range of proportion missed for strip transects fr
 stripMissMean <- 0.16 # mean proportion missed for strip transects from Dique et al. (2001)
 stripMissHigh <- 0.33 # high end of range of proportion missed for strip transects from Dique et al. (2001)
 tranDayLine <- 4600 # line transect length per day in m
-tranDayArea <- 7.5 # strip transect / area search area per day in ha
+tranDayArea <- 7.5 # area search area per day in ha
 siteSize <- 100 # site size in ha
 monitRep <- 21 # monitoring time frame
-budget <- c(95, 190, 380) # 190 field days per year
-survIntens <- 30 #c(30, 50, 70) # proportion of the site surveyed
-method <- c("line", "area") # "line" is all line and "area" is all area searches
+budget <- c(95, 190, 380) # field days per year
+survIntens <- c(30, 50, 70) # proportion of the site surveyed
+method <- c("line", "area") # "line" is all line and "area" is line transects outside the urban footprint and all area searches inside the urban footprint
 monInter <- c(1, 2) # monitoring interval in years
 strat <- c("equal", "area", "density", "invdensity")
 
@@ -39,8 +39,8 @@ strat <- c("equal", "area", "density", "invdensity")
 # since this density data is missing for "core - urban footprint - north west". we also use data from Biolink 2019 for North Stradbroke Island (NSI) and assume core and
 # non-core habitat densities are the same for NSI. this is the file "start_dens_modified.csv"
 pops <- read.csv("input/start_dens_modified.csv") %>%
-  mutate(KD_MEAN=replace(KD_MEAN, KD_MEAN==-9999, NA), KD_SD=replace(KD_SD, KD_SD==-9999, NA),
-    KDLN_MEAN=replace(KDLN_MEAN, KDLN_MEAN==-9999, NA), KDLN_SD=replace(KDLN_SD, KDLN_SD==-9999, NA)) %>%
+  mutate(KD_MEAN = replace(KD_MEAN, KD_MEAN == -9999, NA), KD_SD = replace(KD_SD, KD_SD==-9999, NA),
+    KDLN_MEAN = replace(KDLN_MEAN, KDLN_MEAN == -9999, NA), KDLN_SD=replace(KDLN_SD, KDLN_SD == -9999, NA)) %>%
   filter(AREA >= 100) %>% mutate(ABUND = round(KD_MEAN * AREA)) %>% as_tibble() %>% rowid_to_column("ID") %>% group_by(POP) %>% nest()
 # calculate the population size for each genetic populations
 pops <- pops %>% mutate(N = map_dbl(data, ~sum(.$ABUND)))
