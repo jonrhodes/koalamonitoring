@@ -1,3 +1,27 @@
+
+for (i in 1:nrow(popSimComb)) {
+
+    if (popSimComb[i, "decline"] > 0) {
+
+        temp30 <- read.csv(file = paste("res30/ranking", "_decline", popSimComb[i, "decline"], "_envtlV",
+                      popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".csv", sep = ""))
+        temp60 <- read.csv(file = paste("res60/ranking", "_decline", popSimComb[i, "decline"], "_envtlV",
+                      popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".csv", sep = ""))
+        temp90 <- read.csv(file = paste("res90/ranking", "_decline", popSimComb[i, "decline"], "_envtlV",
+                      popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".csv", sep = ""))
+
+        temp <- rbind(temp30, temp60, temp90) %>% as_tibble() %>% arrange(monitBudget, type2All) %>% dplyr::select(-X)
+
+        write.csv(x = temp, file = paste("ranking", "_decline", popSimComb[i, "decline"], "_envtlV",
+                      popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".csv", sep = ""))
+    }
+}
+
+for (i in 1)
+
+
+
+
 matrix(rbinom(9,size=matrix(c(5,6,7,20,22,5,1,5,9),nrow=3,ncol=3),p=0.5),3,3)
 
 

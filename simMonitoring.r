@@ -11,8 +11,8 @@ source("functions.r")
 
 # define input parameters
 genYears <- 20 # number of years for a generation
-demogV <- 96.21 # demographic stochasticity variance - this is variance in individual annual growth rate among individuals - taken from Rhodes et al. (2011) based on the radio tacking data only
-                # model. Here the standard deviation of the growth rate parameter estimate was 0.04458435 from 220 individuals, so we calculated demogV as (0.04458435 * 220) ^ 2
+demogV <- 0.4373 # demographic stochasticity variance - this is variance in individual annual growth rate among individuals - taken from Rhodes et al. (2011) based on the radio tacking data only
+                # model. Here the standard deviation of the growth rate parameter estimate was 0.04458435 from 220 individuals, so we calculated demogV as (0.04458435^2) * 220
 envtlV <- c(0, 0.01) # environmental stochasticity variance
 envtlCorr <- c(0, 0.5, 1) # correlation in environmental stochasticity among populations
 nSimsPop <- 1000 # number of replicates for the population simulations
@@ -28,7 +28,7 @@ tranDayArea <- 7.5 # area search area per day in ha
 siteSize <- 100 # site size in ha
 monitRep <- 21 # monitoring time frame
 budget <- c(95, 190, 380) # field days per year
-survIntens <- c(30, 50, 70) # proportion of the site surveyed
+survIntens <- c(30, 60, 90) # proportion of the site surveyed
 method <- c("line", "area") # "line" is all line and "area" is line transects outside the urban footprint and all area searches inside the urban footprint
 monInter <- c(1, 2) # monitoring interval in years
 strat <- c("equal", "area", "density", "invdensity")
@@ -66,10 +66,10 @@ stopCluster(cl)
 print(procTime)
 
 # generate survey designs - comment out if already run
-# get combinations of parameters
 
 procTime <- system.time({
 
+# get combinations of parameters
 survSimComb <- expand.grid(budget = budget, survIntens = survIntens, method = method, monInter = monInter, strat = strat, monitRep = monitRep)
 # collate fixed survey parameters together
 fixedSurvParams <- c(f0, f0se, tranDayLine, tranDayArea, siteSize)
@@ -146,4 +146,62 @@ for (i in 1:nrow(popSimComb)) {
 
   print(procTime)
 
+}
+
+# compile results and output rankings
+
+# add row ID to survey combinations
+survSimComb <- survSimComb %>% rowid_to_column("ID")
+
+# loop through population simulation combinations
+for (i in 1:nrow(popSimComb)) {
+  # get type 1 error
+  type1 <- readRDS(file = paste("output/results/result", "_decline", 0, "_envtlV",
+      popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
+  # get results
+  result <- readRDS(file = paste("output/results/result", "_decline", popSimComb[i, "decline"], "_envtlV",
+      popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
+
+  if (popSimComb[i, "decline"] > 0) {
+
+    # compile type 1 errors
+    type1Mat <- matrix(unlist(type1), nrow = length(type1), ncol = length(type1[[1]]), byrow = TRUE)
+    dimnames(type1Mat) <- list(NULL, names(type1[[1]]))
+    type1Mat <- type1Mat %>% as_tibble() %>% rowid_to_column("ID")
+    type1Res <- survSimComb %>% left_join(type1Mat, by = "ID") %>% mutate(type1All = region_decline_mean) %>% dplyr::select(ID, type1All)
+
+    # compile results
+    resultMat <- matrix(unlist(result), nrow = length(result), ncol = length(result[[1]]), byrow = TRUE)
+    dimnames(resultMat) <- list(NULL, names(result[[1]]))
+    resultMat <- resultMat %>% as_tibble() %>% rowid_to_column("ID")
+    finalRes <- survSimComb %>% left_join(resultMat, by = "ID") %>% mutate(monitBudget = budget, monitYears = monitRep - 1, survInter = monInter, monitStrat = strat, monitMethod = method, type2All = 1 - region_decline_mean,
+                      type2GC = 1 - pop1_decline, type2KC = 1 - pop2_decline, type2MB = 1 - pop3_decline, type2NS = 1 - pop4_decline, type2N = 1 - pop5_decline, type2NW = 1 - pop6_decline,
+                      type2SW = 1 - pop7_decline) %>%
+                      left_join(type1Res, by = "ID") %>%
+                      dplyr::select(monitBudget, monitYears, monitStrat, monitMethod, survIntens, survInter, type1All, type2All, type2GC, type2KC, type2MB, type2NS, type2N, type2NW, type2SW) %>%
+                      as_tibble() %>% arrange(monitBudget, type2All)
+
+    # save compiled results
+    write.csv(x = finalRes, file = paste("output/results/ranking", "_decline", popSimComb[i, "decline"], "_envtlV",
+                  popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".csv", sep = ""))
+  }
+}
+
+# compile monitoring strategy details
+
+# get surveys
+Surveys <- apply(survSimComb, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/surveys/survey", "_budget", x["budget"], "_survIntens",
+              as.numeric(x["survIntens"]), "_method", x["method"], "_monInter", as.numeric(x["monInter"]), "_strat", x["strat"], "_monitRep",
+              as.numeric(x["monitRep"]), ".rds", sep = ""))})
+
+# loop through monitoring strategies
+for (i in 1:nrow(survSimComb)) {
+  # get output
+  Output <- Surveys[[i]] %>% mutate(HABITAT = Quality, LAND_USE = LUCategory, KOALA_DENS = KD_MEAN, NUM_SITES = SITES) %>%
+                dplyr::select(FID, POP, HABITAT, LAND_USE, AREA, KOALA_DENS, NUM_SITES, SIZE, TYPE)
+
+  # write output
+  write.csv(x = Output, file = paste("output/surveys/monit_strat", "_monitBudget",
+                  as.numeric(survSimComb[i, "budget"]), "_survIntens", as.numeric(survSimComb[i, "survIntens"]), "_monitMethod", survSimComb[i, "method"], "_survInter",
+                  as.numeric(survSimComb[i, "monInter"]), "_monitStrat", survSimComb[i, "strat"], "_monitYears", as.numeric(survSimComb[i, "monitRep"]) - 1, ".csv", sep = ""))
 }

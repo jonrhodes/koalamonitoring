@@ -28,7 +28,7 @@ projPops <- function(pops, names, nYears, decline, genYears, demogV, envtlV, env
     for (t in 1:nYears) {
       # draw random deviates and growth rate for this year
       # note here we adjust for the expectation of a log normal distribution: exp((sigma^2)/2)
-      DemR <- rnorm(n = length(pops), mean = 0, sd = ifelse(Output[, ncol(Output)] > 0, sqrt(demogV) / Output[, ncol(Output)], 0))
+      DemR <- rnorm(n = length(pops), mean = 0, sd = ifelse(Output[, ncol(Output)] > 0, sqrt(demogV / Output[, ncol(Output)]), 0))
       EnvR <- mvrnorm(n = 1, mu = rep(0, length(pops)), Sigma = envtlVC)
       R <- rep(r, length(pops)) + DemR + EnvR
       Rs[, t] <- R
