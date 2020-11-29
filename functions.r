@@ -476,8 +476,8 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
           J <- 1
           primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
           # get observed counts assuming variation in initial N among sites is Poisson distributed
-          out2[[i]] <- matrix(rbinom(n = M * T, size = round(out[[i]] * matrix(rep(rpois(n = M, lambda = as.numeric(join[i, "SIZE"]) * as.numeric(join[i, "KD_MEAN"])), T), nrow = M, ncol = T)),
-                          prob = 1 - missRand), nrow = M, ncol = T)
+          out2[[i]] <- matrix(suppressWarnings(rbinom(n = M * T, size = round(out[[i]] * matrix(rep(rpois(n = M, lambda = as.numeric(join[i, "SIZE"]) * as.numeric(join[i, "KD_MEAN"])), T), nrow = M, ncol = T)),
+                          prob = 1 - missRand)), nrow = M, ncol = T)
           # get perpendicular distances (not needed in this case)
           out3[[i]] <- NA
           # get model data
@@ -493,6 +493,177 @@ simData <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, strip
 
   # get simulated data
   data <- lapply(popSim, FUN = sim, survey = survey, f0 = f0, f0se = f0se, stripMissLow = stripMissLow, stripMissMean = stripMissMean, stripMissHigh = stripMissHigh)
+
+  return(data)
+}
+
+simDataAdapt <- function(survey, popSim, f0, f0se, stripMissLow, stripMissMean, stripMissHigh, yearAdapt) {
+# function to generate survey data but where an adaptive strategy is adopted whereby
+# if a koala is not seen for yearAdapt years then the site is abandoned and another site is chosen
+# yearAdapt must be > 1
+# survey is the sites selection for a single monitoring parameter combination
+# popSim is the replicates for a single population dynamics parameter combination
+# f0 is the mean of the detection function
+# f0se is the standard error of the detection function
+# stripMissLow is the lower bound probability of missing a koala in a strip/area search
+# stripMissMean is the mean probability of missing a koala in a strip/area search
+# stripMissHigh is the upper bound probability of missing a koala in a strip/area search
+# yearAdapt is how frequently the monitoring strategy is adapted
+
+  # calculate mean and se of f0 on the log scale (since we assume f0 is log-normally distributed)
+  f0log <- log(f0) - (0.5 * (f0se^2))
+  f0selog <- sqrt(log(exp(2 * log(f0) - log(f0se^2)) + 1))
+  sim <- function(popSim, survey, f0, f0se, stripMissLow, stripMissMean, stripMissHigh, yearAdapt) {
+    # join simulations to survey for this iteration
+    join <- left_join(x = survey, y = popSim, by = "POP")
+    # output for densities
+    out <- list()
+    # output for counts
+    out2 <- list()
+    # output for perpendicular distances
+    out3 <- list()
+    # output for model data
+    out4 <- list()
+
+    # loop through strata
+    for (i in 1:nrow(join)) {
+      if (is.null(join$SURVEY[[i]])) {
+        out[[i]] <- NA
+        out2[[i]] <- NA
+        out3[[i]] <- NA
+        out4[[i]] <- NA
+      } else {
+        # get change in density
+        out[[i]] <- join$SURVEY[[i]]
+        out[[i]][which(!is.na(out[[i]]))] <- as.numeric(join[i, paste("V", join$SURVEY[[i]][which(!is.na(out[[i]]))], sep="")]) / as.numeric(join[i,"V1"])
+        # get counts and perpendicular distances
+        if (join[i, "TYPE"] == "line") {
+          f0Rand <- f0  # exp(rnorm(n = 1, mean = f0log, sd = f0selog)) note here we assume f0 is the same among strata and known with certainty, but uncertainty can be introduced via the standard error
+          sigma <- sqrt(2) / (f0Rand * sqrt(pi))
+          M <- nrow(out[[i]])
+          T <- ncol(out[[i]])
+          J <- 4
+          db <- qhnorm(p = c(0, 0.25, 0.5, 0.75, 0.99), sigma = sigma)
+          # Half-normal, line transect
+          g <- function(x, sig) exp(-x^2/(2*sig^2))
+          f <- function(x, sig) exp(-x^2/(2*sig^2)) / sqrt(pi*sigma^2/2)
+          cp <- u <- a <- numeric(J)
+          L <-  1
+          a[1] <- L * db[2]
+          cp[1] <- integrate(g, db[1], db[2], sig = sigma)$value
+          for(j in 2:J) {
+            a[j] <-  db[j+1]  - sum(a[1:j])
+            cp[j] <- integrate(g, db[j], db[j + 1], sig = sigma)$value
+          }
+          u <- a / sum(a)
+          cp <- (cp / a) * u
+          cp[j + 1] <- 1 - sum(cp)
+          primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
+          # get true N assuming variation initial N among sites is Poisson distributed
+          out2[[i]] <-  round(out[[i]] * matrix(rep(rpois(n = M, lambda = as.numeric(join[i, "KD_MEAN"]) * 2 * as.numeric(join[i, "SIZE"]) * db[J + 1] / 10000), T), nrow = M, ncol = T))
+          # get observed counts in perpendicular distance bands
+          out3[[i]] <- array(NA, c(M, J, T))
+          k <- 1
+          while (k <= M) {
+            if (!is.na(out2[[i]][k, 1])) {
+              out3[[i]][k, 1:J, 1] <- rmultinom(1, out2[[i]][k, 1], cp)[1:J]
+            }
+            for(t in 1:(T - 1)) {
+                if (!is.na(out2[[i]][k, t + 1])) {
+                  out3[[i]][k, 1:J, t + 1] <- rmultinom(1, out2[[i]][k, t + 1], cp)[1:J]
+                  # count how many surveys in a row no koalas have been seen
+                  numZero <- 0
+                  for (z in t:1) {
+                    if (!any(is.na(out3[[i]][k, 1:J, z + 1]))) {
+                      if (sum(out3[[i]][k, 1:J, z + 1]) == 0) {
+                        numZero <- numZero + 1
+                      } else {
+                        break
+                      }
+                    }
+                  }
+                  # adapt strategy if necessary
+                  if ((numZero >= yearAdapt) & (t < (T - 1))) {
+                      # add a new site
+                      M <- M + 1
+                      out[[i]] <- rbind(out[[i]], out[[i]][k, ])
+                      out2[[i]] <- rbind(out2[[i]],
+                                    round(out[[i]][nrow(out[[i]]), ] * matrix(rep(rpois(n = 1, lambda = as.numeric(join[i, "KD_MEAN"]) * 2 * as.numeric(join[i, "SIZE"]) * db[J + 1] / 10000), T),
+                                    nrow = 1, ncol = T)))
+                     # add new slice to the observed perpendicular distance data
+                     out3[[i]] <- abind(out3[[i]], array(NA, c(1, J, T)), along = 1)
+                     # set times that will now not be surveyed to NA
+                     out2[[i]][k, (t + 2):T] <- NA
+                     out2[[i]][M, 1:(t + 1)] <- NA
+                     # recreate primary period matrix
+                     primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
+                  }
+                }
+            }
+            k <- k + 1
+          }
+          out3[[i]] <- matrix(out3[[i]], M)
+          # get model data
+          out4[[i]] <- unmarkedFrameDSO(y = out3[[i]], numPrimary = T, primaryPeriod = primPer, dist.breaks = db,
+                                  survey = "line", unitsIn = "m", tlength = rep(as.numeric(join[i, "SIZE"]), M))
+        } else if ((join[i, "TYPE"]) == "area") {
+          missRand <- stripMissMean # runif(1, stripMissLow, stripMissHigh)  note here we assume detection error is the same among strata and known with certainty,
+                                      # but uncertainty can be introduced via the range of values
+          M <- nrow(out[[i]])
+          T <- ncol(out[[i]])
+          J <- 1
+          primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
+          # get observed counts assuming variation in initial N among sites is Poisson distributed
+          out2[[i]] <- matrix(suppressWarnings(rbinom(n = M * T, size = round(out[[i]] * matrix(rep(rpois(n = M, lambda = as.numeric(join[i, "SIZE"]) * as.numeric(join[i, "KD_MEAN"])), T), nrow = M, ncol = T)),
+                          prob = 1 - missRand)), nrow = M, ncol = T)
+          # do adaptation
+          k <- 1
+          while (k <= M) {
+            for(t in 1:(T - 1)) {
+                if (!is.na(out2[[i]][k, t + 1])) {
+                  # count how many surveys in a row no koalas have been seen
+                  numZero <- 0
+                  for (z in t:1) {
+                    if (!is.na((out2[[i]][k, z + 1]))) {
+                      if(out2[[i]][k, z + 1] == 0) {
+                        numZero <- numZero + 1
+                      } else {
+                        break
+                      }
+                    }
+                  }
+                  # adapt strategy if necessary
+                  if ((numZero >= yearAdapt) & (t < (T - 1))) {
+                      # add a new site
+                      M <- M + 1
+                      out[[i]] <- rbind(out[[i]], out[[i]][k, ])
+                      out2[[i]] <- rbind(out2[[i]], matrix(suppressWarnings(rbinom(n = 1 * T, size = round(out[[i]][nrow(out[[i]]), ] * matrix(rep(rpois(n = 1, lambda = as.numeric(join[i, "SIZE"]) *
+                                      as.numeric(join[i, "KD_MEAN"])), T), nrow = 1, ncol = T)), prob = 1 - missRand)), nrow = 1, ncol = T))
+                     # set times that will now not be surveyed to NA
+                     out2[[i]][k, (t + 2):T] <- NA
+                     out2[[i]][M, 1:(t + 1)] <- NA
+                     # recreate primary period matrix
+                     primPer <- matrix(as.integer(rep(1:T, M)), nrow = M, ncol = T, byrow = TRUE)
+                  }
+                }
+            }
+            k <- k + 1
+          }
+          # get perpendicular distances (not needed in this case)
+          out3[[i]] <- NA
+          # get model data
+          out4[[i]] <- unmarkedFramePCO(y = out2[[i]], numPrimary = T, primaryPeriod = primPer)
+        }
+      }
+    }
+
+    out <- join %>% add_column(MODDAT = out4) %>% dplyr::select(ID, SIZE, MODDAT)
+
+    return(out)
+  }
+
+  # get simulated data
+  data <- lapply(popSim, FUN = sim, survey = survey, f0 = f0, f0se = f0se, stripMissLow = stripMissLow, stripMissMean = stripMissMean, stripMissHigh = stripMissHigh, yearAdapt)
 
   return(data)
 }

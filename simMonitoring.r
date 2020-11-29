@@ -5,6 +5,7 @@ library(MASS)
 library(parallel)
 library(extraDistr)
 library(binom)
+library(abind)
 
 # location of functions
 source("functions.r")
@@ -205,3 +206,177 @@ for (i in 1:nrow(survSimComb)) {
                   as.numeric(survSimComb[i, "budget"]), "_survIntens", as.numeric(survSimComb[i, "survIntens"]), "_monitMethod", survSimComb[i, "method"], "_survInter",
                   as.numeric(survSimComb[i, "monInter"]), "_monitStrat", survSimComb[i, "strat"], "_monitYears", as.numeric(survSimComb[i, "monitRep"]) - 1, ".csv", sep = ""))
 }
+
+# test adaptive strategy to abandon sites if koalas not seen for a number of surveys
+
+# generate simulated survey data
+# get survey information
+# here we choose the survey strategies that usually come out as the top two based on Type 2 errors with a budget of 190 (see report) to evaluate the adaptive strategy
+survChosen <- survSimComb[c(56, 65),]
+Surveys <- apply(survChosen, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/surveys/survey", "_budget", x["budget"], "_survIntens",
+              as.numeric(x["survIntens"]), "_method", x["method"], "_monInter", as.numeric(x["monInter"]), "_strat", x["strat"], "_monitRep",
+              as.numeric(x["monitRep"]), ".rds", sep = ""))})
+# loop through population combinations
+for (i in 1:nrow(popSimComb)) {
+
+  # get population simulations
+  popSim <- readRDS(file = paste("output/popsims/popsim", "_decline", popSimComb[i, "decline"], "_envtlV",
+        popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
+
+  # generate data for the adaptive strategy
+  # loop through adaptation years - here we use between 2 and 5
+  for (yearAdapt in 2:5) {
+
+    procTime <- system.time({
+
+    cl <- makeCluster(detectCores() - 1)
+    clusterExport(cl, list("simDataAdapt", "popSim", "f0", "f0se", "stripMissLow", "stripMissMean", "stripMissHigh", "yearAdapt"))
+    clusterEvalQ(cl, library(tidyverse))
+    clusterEvalQ(cl, library(extraDistr))
+    clusterEvalQ(cl, library(unmarked))
+    clusterEvalQ(cl, library(abind))
+    dataTemp <- parLapply(cl = cl, X = Surveys, fun = function(x) {return(simDataAdapt(x, popSim, f0, f0se, stripMissLow, stripMissMean, stripMissHigh, yearAdapt))})
+    stopCluster(cl)
+    saveRDS(object = dataTemp, file = paste("output/adapt/data/simdata_adapt", "_decline", popSimComb[i, "decline"], "_envtlV",
+          popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], "_yearAdapt", yearAdapt, ".rds", sep = ""))
+    rm(dataTemp)
+    gc()
+
+    })
+
+    print(procTime)
+
+  }
+
+  # generate data for the standard strategy
+  procTime <- system.time({
+
+  cl <- makeCluster(detectCores() - 1)
+  clusterExport(cl, list("simData", "popSim", "f0", "f0se", "stripMissLow", "stripMissMean", "stripMissHigh"))
+  clusterEvalQ(cl, library(tidyverse))
+  clusterEvalQ(cl, library(extraDistr))
+  clusterEvalQ(cl, library(unmarked))
+  dataTemp <- parLapply(cl = cl, X = Surveys, fun = function(x) {return(simData(x, popSim, f0, f0se, stripMissLow, stripMissMean, stripMissHigh))})
+  stopCluster(cl)
+  saveRDS(object = dataTemp, file = paste("output/adapt/data/simdata_stand", "_decline", popSimComb[i, "decline"], "_envtlV",
+        popSimComb[i, "envtlV"], "_envtlCorr", popSimComb[i, "envtlCorr"], ".rds", sep = ""))
+  rm(dataTemp)
+  gc()
+
+  })
+
+  print(procTime)
+
+  rm(popSim)
+  gc()
+}
+
+# fit models to adaptive and standard strategies but only for the 0%, 10%, 25% and 50% declines
+popChosen <- popSimComb[which((popSimComb[ ,"decline"] == 0) | (popSimComb[ ,"decline"] == 10) | (popSimComb[ ,"decline"] == 25) | (popSimComb[ ,"decline"] == 50)), ]
+
+# loop through population combinations
+for (i in 1:nrow(popChosen)) {
+
+  # fit models for the adaptive strategy
+  # loop through adaptation years - here we use between 2 and 10
+  for (yearAdapt in 2:5) {
+
+    procTime <- system.time({
+
+    # get simulated data for adaptive strategy
+    surveyData <- readRDS(file = paste("output/adapt/data/simdata_adapt", "_decline", popChosen[i, "decline"], "_envtlV",
+          popChosen[i, "envtlV"], "_envtlCorr", popChosen[i, "envtlCorr"], "_yearAdapt", yearAdapt, ".rds", sep = ""))
+    # PICK HOW MANY REPLICATES - edit out if using all replicates
+    surveyData <- lapply(surveyData, FUN = function(x) {x[1:100]})
+    expR <-  log((1 - (popChosen[i, "decline"] / 100)) ^ (1 / genYears))
+    cl <- makeCluster(detectCores() - 1)
+    clusterExport(cl, list("fitModels", "pops", "expR"))
+    clusterEvalQ(cl, library(tidyverse))
+    clusterEvalQ(cl, library(unmarked))
+    clusterEvalQ(cl, library(binom))
+    resultTemp <- parLapply(cl = cl, X = surveyData, fun = function(x) {return(fitModels(x, pops, expR))})
+    stopCluster(cl)
+    saveRDS(object = resultTemp, file = paste("output/adapt/results/result_adapt", "_decline", popChosen[i, "decline"], "_envtlV",
+                  popChosen[i, "envtlV"], "_envtlCorr", popChosen[i, "envtlCorr"], "_yearAdapt", yearAdapt, ".rds", sep = ""))
+    rm(surveyData)
+    rm(resultTemp)
+    gc()
+
+    })
+
+    print(procTime)
+  }
+
+  # fit models for the standard strategy
+  procTime <- system.time({
+
+  # get simulated data for adaptive strategy
+  surveyData <- readRDS(file = paste("output/adapt/data/simdata_stand", "_decline", popChosen[i, "decline"], "_envtlV",
+        popChosen[i, "envtlV"], "_envtlCorr", popChosen[i, "envtlCorr"], ".rds", sep = ""))
+  # PICK HOW MANY REPLICATES - edit out if using all replicates
+  surveyData <- lapply(surveyData, FUN = function(x) {x[1:100]})
+  expR <-  log((1 - (popChosen[i, "decline"] / 100)) ^ (1 / genYears))
+  cl <- makeCluster(detectCores() - 1)
+  clusterExport(cl, list("fitModels", "pops", "expR"))
+  clusterEvalQ(cl, library(tidyverse))
+  clusterEvalQ(cl, library(unmarked))
+  clusterEvalQ(cl, library(binom))
+  resultTemp <- parLapply(cl = cl, X = surveyData, fun = function(x) {return(fitModels(x, pops, expR))})
+  stopCluster(cl)
+  saveRDS(object = resultTemp, file = paste("output/adapt/results/result_stand", "_decline", popChosen[i, "decline"], "_envtlV",
+                popChosen[i, "envtlV"], "_envtlCorr", popChosen[i, "envtlCorr"], ".rds", sep = ""))
+  rm(surveyData)
+  rm(resultTemp)
+  gc()
+
+  })
+
+  print(procTime)
+}
+
+# compile adaptive and standard monitoring strategy details for the 1st ranked and 2nd ranked strategy
+compiledAdapt_Rank1 <- matrix(NA, nrow = 4, ncol = 6)
+dimnames(compiledAdapt_Rank1) <- list(NULL, c("decline", "standard_error", "yearAdapt2_error", "yearAdapt3_error", "yearAdapt4_error",
+                        "yearAdapt5_error"))
+compiledAdapt_Rank1[ ,"decline"] <- c(0, 10, 20, 50)
+compiledAdapt_Rank2 <- matrix(NA, nrow = 4, ncol = 6)
+dimnames(compiledAdapt_Rank2) <- list(NULL, c("decline", "standard_error", "yearAdapt2_error", "yearAdapt3_error", "yearAdapt4_error",
+                        "yearAdapt5_error"))
+compiledAdapt_Rank2[ ,"decline"] <- c(0, 10, 20, 50)
+
+# loop through declines
+Declines <- c(0, 10, 25, 50)
+for (i in 1:length(Declines)) {
+
+  popChosenTemp <- popChosen[which(popChosen[, "decline"] == Declines[i]), ]
+
+  #get the errors for the standard approach
+  meanStand_Rank1 <- mean(apply(popChosenTemp, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/adapt/results/result_stand", "_decline",
+              x["decline"], "_envtlV", x["envtlV"], "_envtlCorr", x["envtlCorr"], ".rds", sep = ""))[[1]]["region_decline_mean"]}))
+  meanStand_Rank2 <- mean(apply(popChosenTemp, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/adapt/results/result_stand", "_decline",
+                          x["decline"], "_envtlV", x["envtlV"], "_envtlCorr", x["envtlCorr"], ".rds", sep = ""))[[2]]["region_decline_mean"]}))
+  if (i > 1) {
+    meanStand_Rank1 <- 1 - meanStand_Rank1
+    meanStand_Rank2 <- 1 - meanStand_Rank2
+  }
+  compiledAdapt_Rank1[i, "standard_error"] <- meanStand_Rank1
+  compiledAdapt_Rank2[i, "standard_error"] <- meanStand_Rank2
+
+  #get the errors for the adaptive approach
+  for (j in 2:5) {
+    meanAdapt_Rank1 <- mean(apply(popChosenTemp, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/adapt/results/result_adapt", "_decline",
+                x["decline"], "_envtlV", x["envtlV"], "_envtlCorr", x["envtlCorr"], "_yearAdapt", j, ".rds", sep = ""))[[1]]["region_decline_mean"]}))
+    meanAdapt_Rank2 <- mean(apply(popChosenTemp, MARGIN = 1, FUN = function(x) {readRDS(file = paste("output/adapt/results/result_adapt", "_decline",
+                            x["decline"], "_envtlV", x["envtlV"], "_envtlCorr", x["envtlCorr"], "_yearAdapt", j, ".rds", sep = ""))[[2]]["region_decline_mean"]}))
+    if (i > 1) {
+      meanAdapt_Rank1 <- 1 - meanAdapt_Rank1
+      meanAdapt_Rank2 <- 1 - meanAdapt_Rank2
+    }
+    compiledAdapt_Rank1[i, j + 1] <- meanAdapt_Rank1
+    compiledAdapt_Rank2[i, j + 1] <- meanAdapt_Rank2
+  }
+}
+
+# write outputs
+write.csv(x = compiledAdapt_Rank1, file = "output/adapt/results/adapt_compiled_results_rank1.csv")
+write.csv(x = compiledAdapt_Rank2, file = "output/adapt/results/adapt_compiled_results_rank2.csv")
